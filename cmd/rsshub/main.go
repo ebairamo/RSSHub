@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 )
@@ -8,8 +9,10 @@ import (
 // Другие необходимые импорты
 
 func main() {
-	if len(os.Args) < 1 {
-		fmt.Print("Введите url")
+	if len(os.Args) < 2 {
+		fmt.Println("Ошибка: команда не указана")
+		printHelp()
+		os.Exit(1)
 	}
 	comand := os.Args[1]
 
@@ -37,6 +40,10 @@ func main() {
 
 	case "help":
 		printHelp()
+	default:
+		fmt.Printf("Ошибка: неизвестная команда '%s'\n", comand)
+		printHelp()
+		os.Exit(1)
 	}
 
 }
@@ -74,26 +81,37 @@ func runFetch() {
 
 // Функция для команды add
 func runAdd() {
-	// 1. Создайте набор флагов для команды add
-	// Используйте flag.NewFlagSet()
+	addCmd := flag.NewFlagSet("add", flag.ExitOnError)
 
-	// 2. Определите флаги для имени и URL канала
-	// Используйте addCmd.String()
+	name := addCmd.String("name", "", "Название RSS-канала")
+	url := addCmd.String("url", "", "URL RSS-канала")
 
-	// 3. Распарсите флаги
-	// Используйте addCmd.Parse()
+	addCmd.Parse(os.Args[2:])
 
-	// 4. Проверьте, что указаны все необходимые флаги
-	// Если нет, выведите ошибку и справку по команде
+	if *name == "" || *url == "" {
+		fmt.Println("Необходимо указать name и url")
+		addCmd.PrintDefaults()
+		os.Exit(1)
+	}
 
-	// 5. Выведите сообщение о добавлении канала
-	// Например: "Добавление канала: ИМЯ (URL)"
-
+	fmt.Printf("Добавлен новый URL %s с именем %s\n", *url, *name)
 	// 6. Здесь будет код для добавления канала в БД
 }
 
 // Функция для команды set-interval
 func runSetInterval() {
+
+	intervalCmd := flag.NewFlagSet("set-interval", flag.ExitOnError)
+	intervalFlag := intervalCmd.Duration("interval", 3, "Интервал между RSS")
+	intervalCmd.Parse(os.Args[2:])
+
+	if *intervalFlag > 0 {
+		fmt.Println("Укажите время ожидания")
+		intervalCmd.PrintDefaults()
+		os.Exit(1)
+	}
+	fmt.Printf("Интервал получения данных изменился с 3 на %d %v", *intervalFlag, intervalFlag)
+
 	// 1. Создайте набор флагов для команды set-interval
 	// Используйте flag.NewFlagSet()
 
@@ -114,6 +132,19 @@ func runSetInterval() {
 
 // Функция для команды set-workers
 func runSetWorkers() {
+
+	workersCmd := flag.NewFlagSet("set-workers", flag.ExitOnError)
+
+	workersFlag := workersCmd.Int("count", 3, "Количество работников")
+
+	workersCmd.Parse(os.Args[2:])
+
+	if *workersFlag <= 0 {
+		fmt.Println("Укажите количество работников")
+		workersCmd.PrintDefaults()
+		os.Exit(1)
+	}
+	fmt.Printf("Количество рабочих процессов изменилось с 3 на %d\n", *workersFlag)
 	// 1. Создайте набор флагов для команды set-workers
 	// Используйте flag.NewFlagSet()
 
@@ -134,6 +165,16 @@ func runSetWorkers() {
 
 // Функция для команды list
 func runList() {
+
+	listCmd := flag.NewFlagSet("list", flag.ExitOnError)
+
+	limit := listCmd.Int("limit", 10, "")
+
+	listCmd.Parse(os.Args[2:])
+
+	fmt.Println("Доступные RSS-каналы")
+
+	fmt.Println(*limit)
 	// 1. Создайте набор флагов для команды list
 	// Используйте flag.NewFlagSet()
 
@@ -154,26 +195,46 @@ func runList() {
 
 // Функция для команды delete
 func runDelete() {
-	// 1. Создайте набор флагов для команды delete
-	// Используйте flag.NewFlagSet()
 
-	// 2. Определите флаг для имени удаляемого канала
-	// Например, nameFlag := deleteCmd.String()
+	deleteCmd := flag.NewFlagSet("delete", flag.ExitOnError)
 
-	// 3. Распарсите флаги
-	// Используйте deleteCmd.Parse()
+	name := deleteCmd.String("name", "", "Название RSS-канала")
 
-	// 4. Проверьте, что указано имя канала
-	// Если нет, выведите ошибку и справку по команде
+	deleteCmd.Parse(os.Args[2:])
 
-	// 5. Выведите сообщение об удалении канала
-	// Например: "Удаление канала: NAME"
+	if *name == "" {
+		deleteCmd.PrintDefaults()
+		os.Exit(1)
+	}
+	fmt.Printf("Удаление канала: %s \n", *name)
 
 	// 6. Здесь будет код для удаления канала из БД
 }
 
 // Функция для команды articles
 func runArticles() {
+
+	articlesCmd := flag.NewFlagSet("articles", flag.ExitOnError)
+	feedNameFlag := articlesCmd.String("feed-name", "", "Название RSS канала")
+	numFlag := articlesCmd.Int("num", 5, "Лимит статей")
+
+	articlesCmd.Parse(os.Args[2:])
+
+	if *feedNameFlag == "" {
+		articlesCmd.PrintDefaults()
+		os.Exit(1)
+	}
+	fmt.Printf("Источник: %s %d \n", *feedNameFlag, *numFlag)
+
+	fmt.Println("1. [2025-06-18] Apple анонсирует новые чипы M4 для MacBook Pro")
+	fmt.Println("   https://techcrunch.com/apple-announces-m4/")
+	fmt.Println("")
+	fmt.Println("2. [2025-06-17] OpenAI запускает GPT-5 с мультимодальными возможностями")
+	fmt.Println("   https://techcrunch.com/openai-launches-gpt-5/")
+	fmt.Println("")
+	fmt.Println("3. [2025-06-16] Google представляет новые инструменты для обеспечения конфиденциальности")
+	fmt.Println("   https://techcrunch.com/google-privacy-io-2025/")
+
 	// 1. Создайте набор флагов для команды articles
 	// Используйте flag.NewFlagSet()
 
