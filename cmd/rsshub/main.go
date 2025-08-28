@@ -4,6 +4,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"rsshub/internal/parser"
+	"rsshub/internal/storage"
+	"syscall"
 )
 
 // Другие необходимые импорты
@@ -15,6 +19,7 @@ func main() {
 		os.Exit(1)
 	}
 	comand := os.Args[1]
+	fmt.Println(comand)
 
 	switch comand {
 	case "fetch":
@@ -40,12 +45,41 @@ func main() {
 
 	case "help":
 		printHelp()
+	case "url":
+		runUrl()
+	case "db":
+		runDBTest()
 	default:
 		fmt.Printf("Ошибка: неизвестная команда '%s'\n", comand)
 		printHelp()
 		os.Exit(1)
 	}
 
+}
+
+func runUrl() {
+	urlCmd := flag.NewFlagSet("url", flag.ExitOnError)
+
+	url := urlCmd.String("url", "", "URL RSS-канала")
+	urlCmd.Parse(os.Args[2:])
+	fmt.Printf("Парсинг URL: %s\n", *url)
+	if *url == "" {
+		fmt.Println("Необходимо указать name и url", *url)
+		urlCmd.PrintDefaults()
+		os.Exit(1)
+	}
+	feed, err := parser.ParseFeed(*url)
+	if err != nil {
+		fmt.Println("!!!!!!!")
+	}
+	fmt.Printf("Канал: %s\n", feed.Channel.Title)
+	fmt.Printf("Описание: %s\n", feed.Channel.Description)
+	fmt.Printf("Ссылка: %s\n", feed.Channel.Link)
+	fmt.Printf("Количество статей: %d\n\n", len(feed.Channel.Items))
+	feeded := feed.Channel.Items
+	for _, feedd := range feeded {
+		fmt.Println(feedd)
+	}
 }
 
 // Функция для вывода справки
@@ -67,16 +101,21 @@ func printHelp() {
 
 // Функция для команды fetch
 func runFetch() {
-	// 1. Создайте набор флагов для команды fetch
-	// Используйте flag.NewFlagSet()
+	// Не принимаем параметры URL
 
-	// 2. Определите и распарсите флаги
-	// Например, флаги для интервала и количества воркеров
+	// Выводим сообщение о запуске
+	fmt.Println("Запущен фоновый процесс для получения каналов (интервал = 3 минуты, количество рабочих процессов = 3)")
 
-	// 3. Выведите сообщение о запуске фонового процесса
-	// Например: "Запущен фоновый процесс для получения каналов..."
+	// Заглушка для будущей реализации
+	fmt.Println("Имитация работы фонового процесса...")
+	fmt.Println("Для остановки процесса нажмите Ctrl+C")
 
-	// 4. Здесь будет код для запуска фонового процесса агрегации
+	// Простая имитация бесконечного цикла с возможностью прерывания
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	<-sigChan
+
+	fmt.Println("Изящное завершение работы: агрегатор остановлен")
 }
 
 // Функция для команды add
@@ -89,12 +128,13 @@ func runAdd() {
 	addCmd.Parse(os.Args[2:])
 
 	if *name == "" || *url == "" {
-		fmt.Println("Необходимо указать name и url")
+		fmt.Println("Необходимо указать name и url", *name, *url)
 		addCmd.PrintDefaults()
 		os.Exit(1)
 	}
 
 	fmt.Printf("Добавлен новый URL %s с именем %s\n", *url, *name)
+
 	// 6. Здесь будет код для добавления канала в БД
 }
 
@@ -105,12 +145,12 @@ func runSetInterval() {
 	intervalFlag := intervalCmd.Duration("interval", 3, "Интервал между RSS")
 	intervalCmd.Parse(os.Args[2:])
 
-	if *intervalFlag > 0 {
+	if *intervalFlag <= 0 {
 		fmt.Println("Укажите время ожидания")
 		intervalCmd.PrintDefaults()
 		os.Exit(1)
 	}
-	fmt.Printf("Интервал получения данных изменился с 3 на %d %v", *intervalFlag, intervalFlag)
+	fmt.Printf("Интервал получения данных изменился с 3 на %d", *intervalFlag)
 
 	// 1. Создайте набор флагов для команды set-interval
 	// Используйте flag.NewFlagSet()
@@ -254,4 +294,25 @@ func runArticles() {
 
 	// 7. Выведите информацию о каждой статье
 	// Например: "1. [DATE] TITLE\n URL"
+}
+
+func runDBTest() {
+	connStr := "postgres://postgres:changeme@localhost:5432/rsshub?sslmode=disable"
+
+	db, err := storage.ConnectToDB(connStr)
+	if err != nil {
+		fmt.Printf("Ошибка подключения: %v\n", err)
+		return
+	}
+	defer db.Close()
+
+	// Тестовый запрос
+	var version string
+	err = db.QueryRow("SELECT version()").Scan(&version)
+	if err != nil {
+		fmt.Printf("Ошибка запроса: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Успешное подключение! Версия PostgreSQL: %s\n", version)
 }
