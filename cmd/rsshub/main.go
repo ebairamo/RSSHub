@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
+	"rsshub/internal/models"
 	"rsshub/internal/parser"
 	"rsshub/internal/storage"
 	"syscall"
@@ -49,6 +51,7 @@ func main() {
 		runUrl()
 	case "db":
 		runDBTest()
+
 	default:
 		fmt.Printf("Ошибка: неизвестная команда '%s'\n", comand)
 		printHelp()
@@ -132,9 +135,23 @@ func runAdd() {
 		addCmd.PrintDefaults()
 		os.Exit(1)
 	}
+	feed := &models.Feed{
+		Name: *name,
+		URL:  *url,
+	}
 
 	fmt.Printf("Добавлен новый URL %s с именем %s\n", *url, *name)
-
+	repo, err := storage.NewPostgresRepository("postgres://postgres:changeme@localhost:5432/rsshub?sslmode=disable")
+	if err != nil {
+		fmt.Println("Ошибка создания бд", err)
+		return
+	}
+	defer repo.Close()
+	ctx := context.Background()
+	err = repo.AddFeed(ctx, feed)
+	if err != nil {
+		fmt.Println(err)
+	}
 	// 6. Здесь будет код для добавления канала в БД
 }
 
@@ -212,9 +229,24 @@ func runList() {
 
 	listCmd.Parse(os.Args[2:])
 
-	fmt.Println("Доступные RSS-каналы")
+	repo, err := storage.NewPostgresRepository("postgres://postgres:changeme@localhost:5432/rsshub?sslmode=disable")
+	if err != nil {
+		fmt.Println("Ошибка создания бд", err)
+		return
+	}
+	defer repo.Close()
+	ctx := context.Background()
+	feeds, err := repo.ListFeeds(ctx, *limit)
+	if err != nil {
+		fmt.Println(err)
+	}
+	fmt.Println("# Доступные RSS-каналы")
+	for i, feed := range feeds {
+		fmt.Printf("%d. Название: %s\n", i+1, feed.Name)
+		fmt.Printf("   URL: %s\n", feed.URL)
+		fmt.Printf("   Добавлено: %s\n\n", feed.CreatedAt.Format("2006-01-02 15:04"))
+	}
 
-	fmt.Println(*limit)
 	// 1. Создайте набор флагов для команды list
 	// Используйте flag.NewFlagSet()
 
@@ -246,8 +278,15 @@ func runDelete() {
 		deleteCmd.PrintDefaults()
 		os.Exit(1)
 	}
-	fmt.Printf("Удаление канала: %s \n", *name)
 
+	repo, err := storage.NewPostgresRepository("postgres://postgres:changeme@localhost:5432/rsshub?sslmode=disable")
+	if err != nil {
+		fmt.Println("Ошибка создания бд", err)
+		return
+	}
+	defer repo.Close()
+	ctx := context.Background()
+	repo.DeleteFeed(ctx, *name)
 	// 6. Здесь будет код для удаления канала из БД
 }
 
@@ -297,22 +336,26 @@ func runArticles() {
 }
 
 func runDBTest() {
-	connStr := "postgres://postgres:changeme@localhost:5432/rsshub?sslmode=disable"
 
-	db, err := storage.ConnectToDB(connStr)
+	repo, err := storage.NewPostgresRepository("postgres://postgres:changeme@localhost:5432/rsshub?sslmode=disable")
 	if err != nil {
-		fmt.Printf("Ошибка подключения: %v\n", err)
+		fmt.Println("Ошибка создания бд", err)
 		return
 	}
-	defer db.Close()
+	defer repo.Close()
 
 	// Тестовый запрос
 	var version string
-	err = db.QueryRow("SELECT version()").Scan(&version)
+
+	err = repo.DB.QueryRow("SELECT version()").Scan(&version)
 	if err != nil {
 		fmt.Printf("Ошибка запроса: %v\n", err)
 		return
 	}
 
 	fmt.Printf("Успешное подключение! Версия PostgreSQL: %s\n", version)
+	err = repo.RunMigrations("./migrations")
+	if err != nil {
+		fmt.Println(err)
+	}
 }
