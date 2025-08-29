@@ -327,6 +327,12 @@ func (r *PostgresRepository) AddArticle(ctx context.Context, article *models.Art
 
 // GetArticlesByFeed получает статьи для конкретного канала
 func (r *PostgresRepository) GetArticlesByFeed(ctx context.Context, feedName string, limit int) ([]*models.Article, error) {
+
+	// quert := `
+	// INSERT INTO articles (id, created_at, updated_at, title, link, published_at, description, feed_id)
+	// VALUES (DEFAULT, NOW(), NOW(), $1, $2, $3, $4, $5)
+	// ON CONFLICT (link) DO NOTHING
+	// `
 	// 1. Подготовьте SQL-запрос для выборки статей по имени канала
 	// JOIN между таблицами feeds и articles
 

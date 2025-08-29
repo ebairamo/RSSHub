@@ -80,8 +80,12 @@ func runUrl() {
 	fmt.Printf("Ссылка: %s\n", feed.Channel.Link)
 	fmt.Printf("Количество статей: %d\n\n", len(feed.Channel.Items))
 	feeded := feed.Channel.Items
-	for _, feedd := range feeded {
-		fmt.Println(feedd)
+	for i, feedd := range feeded {
+		if i == 5 {
+			break
+		}
+		i++
+		fmt.Println(feedd.Description)
 	}
 }
 
