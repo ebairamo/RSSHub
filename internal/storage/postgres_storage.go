@@ -267,9 +267,16 @@ func (r *PostgresRepository) DeleteFeed(ctx context.Context, name string) error 
 	query := `
 		DELETE FROM feeds WHERE name = $1
 	`
-	_, err := r.DB.ExecContext(ctx, query, name)
+	result, err := r.DB.ExecContext(ctx, query, name)
 	if err != nil {
 		return err
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("канал с именем '%s' не найден", name)
 	}
 
 	// 1. Подготовьте SQL-запрос для удаления (DELETE FROM feeds WHERE name = ?)

@@ -286,7 +286,11 @@ func runDelete() {
 	}
 	defer repo.Close()
 	ctx := context.Background()
-	repo.DeleteFeed(ctx, *name)
+	err = repo.DeleteFeed(ctx, *name)
+	if err != nil {
+		fmt.Printf("ошибка: канал с именем %s не найден\n", *name)
+		os.Exit(1)
+	}
 	// 6. Здесь будет код для удаления канала из БД
 }
 
