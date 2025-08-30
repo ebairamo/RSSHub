@@ -391,7 +391,6 @@ func parsePubDate(pubDate string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("не удалось распарсить дату: %s", pubDate)
 }
 
-// Функция для команды add
 func runAdd() {
 	addCmd := flag.NewFlagSet("add", flag.ExitOnError)
 
@@ -401,28 +400,36 @@ func runAdd() {
 	addCmd.Parse(os.Args[2:])
 
 	if *name == "" || *url == "" {
-		fmt.Println("Необходимо указать name и url", *name, *url)
+		fmt.Printf("Необходимо указать name и url %s %s\n", *name, *url)
 		addCmd.PrintDefaults()
 		os.Exit(1)
 	}
-	feed := &models.Feed{
-		Name: *name,
-		URL:  *url,
-	}
 
-	fmt.Printf("Добавлен новый URL %s с именем %s\n", *url, *name)
+	// Создание репозитория
 	repo, err := storage.NewPostgresRepository("postgres://postgres:changeme@localhost:5432/rsshub?sslmode=disable")
 	if err != nil {
 		fmt.Println("Ошибка создания бд", err)
 		return
 	}
 	defer repo.Close()
+
+	// Создание объекта канала
+	feed := &models.Feed{
+		Name:      *name,
+		URL:       *url,
+		UpdatedAt: time.Now(),
+	}
+
+	// Добавление канала в БД
 	ctx := context.Background()
 	err = repo.AddFeed(ctx, feed)
 	if err != nil {
-		fmt.Println(err)
+		fmt.Printf("Ошибка добавления в базу данных\n%v\n", err)
+		return
 	}
-	// 6. Здесь будет код для добавления канала в БД
+
+	// Всегда выводим сообщение об успешном добавлении
+	fmt.Printf("Добавлен новый URL %s с именем %s\n", *url, *name)
 }
 
 func runSetInterval() {
@@ -660,12 +667,12 @@ func runArticles() {
 		return
 	}
 
+	// Исправленный цикл вывода статей с правильной нумерацией
 	for i, article := range articles {
 		fmt.Printf("%d. [%s] %s\n", i+1, article.PublishedAt.Format("2006-01-02"), article.Title)
 		fmt.Printf("   %s\n\n", article.Link)
 	}
 }
-
 func runDBTest() {
 
 	repo, err := storage.NewPostgresRepository("postgres://postgres:changeme@localhost:5432/rsshub?sslmode=disable")

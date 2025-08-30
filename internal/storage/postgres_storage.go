@@ -369,14 +369,13 @@ func (r *PostgresRepository) AddArticle(ctx context.Context, article *models.Art
 	return nil
 }
 
-// GetArticlesByFeed возвращает статьи для конкретного канала
 func (r *PostgresRepository) GetArticlesByFeed(ctx context.Context, feedName string, limit int) ([]*models.Article, error) {
-	// Запрос для получения статей канала
+	// Запрос для получения статей канала без учета регистра
 	query := `
         SELECT a.id, a.created_at, a.updated_at, a.title, a.link, a.published_at, a.description, a.feed_id
         FROM articles a
         JOIN feeds f ON a.feed_id = f.id
-        WHERE f.name = $1
+        WHERE LOWER(f.name) = LOWER($1)
         ORDER BY a.published_at DESC
         LIMIT $2
     `
@@ -391,7 +390,7 @@ func (r *PostgresRepository) GetArticlesByFeed(ctx context.Context, feedName str
 	// Обработка результатов
 	var articles []*models.Article
 	for rows.Next() {
-		var article models.Article
+		article := &models.Article{}
 		err := rows.Scan(
 			&article.ID,
 			&article.CreatedAt,
@@ -405,7 +404,7 @@ func (r *PostgresRepository) GetArticlesByFeed(ctx context.Context, feedName str
 		if err != nil {
 			return nil, fmt.Errorf("ошибка сканирования статьи: %w", err)
 		}
-		articles = append(articles, &article)
+		articles = append(articles, article)
 	}
 
 	// Проверка ошибок после цикла
