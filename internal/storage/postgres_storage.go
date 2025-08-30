@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"rsshub/internal/models"
 
@@ -315,33 +316,102 @@ func (r *PostgresRepository) UpdateFeedTimestamp(ctx context.Context, feedID str
 
 // AddArticle добавляет новую статью в базу данных
 func (r *PostgresRepository) AddArticle(ctx context.Context, article *models.Article) error {
-	// 1. Подготовьте SQL-запрос для вставки (INSERT INTO articles)
+	// Проверка входных данных
+	if article == nil {
+		return fmt.Errorf("статья не может быть nil")
+	}
 
-	// 2. Выполните запрос с параметрами из article
+	if article.Title == "" || article.Link == "" || article.FeedID == 0 {
+		return fmt.Errorf("необходимо указать title, link и feed_id")
+	}
 
-	// 3. Обработайте возможную ошибку
+	// Используем текущее время, если время публикации не указано
+	publishedAt := article.PublishedAt
+	if publishedAt.IsZero() {
+		publishedAt = time.Now()
+	}
 
-	// 4. Верните nil или ошибку
+	// SQL-запрос для вставки статьи
+	query := `
+        INSERT INTO articles (
+            created_at, updated_at, title, link, published_at, description, feed_id
+        ) VALUES (
+            NOW(), NOW(), $1, $2, $3, $4, $5
+        ) ON CONFLICT (link) DO NOTHING
+    `
+
+	// Выполнение запроса
+	result, err := r.DB.ExecContext(
+		ctx,
+		query,
+		article.Title,
+		article.Link,
+		publishedAt,
+		article.Description,
+		article.FeedID,
+	)
+
+	if err != nil {
+		return fmt.Errorf("ошибка добавления статьи: %w", err)
+	}
+
+	// Проверка, была ли статья действительно добавлена
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("ошибка получения количества затронутых строк: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		// Статья уже существует, но это не ошибка
+		return nil
+	}
+
 	return nil
 }
 
-// GetArticlesByFeed получает статьи для конкретного канала
+// GetArticlesByFeed возвращает статьи для конкретного канала
 func (r *PostgresRepository) GetArticlesByFeed(ctx context.Context, feedName string, limit int) ([]*models.Article, error) {
+	// Запрос для получения статей канала
+	query := `
+        SELECT a.id, a.created_at, a.updated_at, a.title, a.link, a.published_at, a.description, a.feed_id
+        FROM articles a
+        JOIN feeds f ON a.feed_id = f.id
+        WHERE f.name = $1
+        ORDER BY a.published_at DESC
+        LIMIT $2
+    `
 
-	// quert := `
-	// INSERT INTO articles (id, created_at, updated_at, title, link, published_at, description, feed_id)
-	// VALUES (DEFAULT, NOW(), NOW(), $1, $2, $3, $4, $5)
-	// ON CONFLICT (link) DO NOTHING
-	// `
-	// 1. Подготовьте SQL-запрос для выборки статей по имени канала
-	// JOIN между таблицами feeds и articles
+	// Выполнение запроса
+	rows, err := r.DB.QueryContext(ctx, query, feedName, limit)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка запроса статей: %w", err)
+	}
+	defer rows.Close()
 
-	// 2. Выполните запрос с параметрами feedName и limit
+	// Обработка результатов
+	var articles []*models.Article
+	for rows.Next() {
+		var article models.Article
+		err := rows.Scan(
+			&article.ID,
+			&article.CreatedAt,
+			&article.UpdatedAt,
+			&article.Title,
+			&article.Link,
+			&article.PublishedAt,
+			&article.Description,
+			&article.FeedID,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("ошибка сканирования статьи: %w", err)
+		}
+		articles = append(articles, &article)
+	}
 
-	// 3. Создайте слайс для результатов
+	// Проверка ошибок после цикла
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ошибка при итерации по статьям: %w", err)
+	}
 
-	// 4. Пройдите по результатам и добавьте каждую статью в слайс
-
-	// 5. Верните слайс и nil или nil и ошибку
-	return nil, nil
+	return articles, nil
 }

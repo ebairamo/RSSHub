@@ -4,25 +4,25 @@ import (
 	"time"
 )
 
-// Feed представляет RSS-канал
+// Обновите структуру Feed в models.go
 type Feed struct {
-	ID        string    `db:"id"`
+	ID        int       `db:"id"`
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
 	Name      string    `db:"name"`
 	URL       string    `db:"url"`
 }
 
-// Article представляет статью из RSS-канала
+// Обновите структуру Article в models.go
 type Article struct {
-	ID          string    `db:"id"`
+	ID          int       `db:"id"`
 	CreatedAt   time.Time `db:"created_at"`
 	UpdatedAt   time.Time `db:"updated_at"`
 	Title       string    `db:"title"`
 	Link        string    `db:"link"`
 	PublishedAt time.Time `db:"published_at"`
 	Description string    `db:"description"`
-	FeedID      string    `db:"feed_id"`
+	FeedID      int       `db:"feed_id"`
 }
 
 type RSS struct {

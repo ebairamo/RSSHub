@@ -9,7 +9,9 @@ import (
 	"rsshub/internal/models"
 	"rsshub/internal/parser"
 	"rsshub/internal/storage"
+	"sync"
 	"syscall"
+	"time"
 )
 
 // Другие необходимые импорты
@@ -107,22 +109,286 @@ func printHelp() {
 }
 
 // Функция для команды fetch
+// Структура для хранения информации об агрегаторе
+type Aggregator struct {
+	repo        *storage.PostgresRepository
+	interval    time.Duration
+	workerCount int
+
+	ticker  *time.Ticker
+	jobCh   chan int
+	done    chan struct{}
+	running bool
+	mu      sync.Mutex
+}
+
+// Глобальный экземпляр агрегатора
+var aggregator *Aggregator
+
+// Функция для запуска команды fetch
 func runFetch() {
-	// Не принимаем параметры URL
+	// Создаем репозиторий
+	repo, err := storage.NewPostgresRepository("postgres://postgres:changeme@localhost:5432/rsshub?sslmode=disable")
+	if err != nil {
+		fmt.Println("Ошибка подключения к БД:", err)
+		return
+	}
 
-	// Выводим сообщение о запуске
-	fmt.Println("Запущен фоновый процесс для получения каналов (интервал = 3 минуты, количество рабочих процессов = 3)")
+	// Устанавливаем значения по умолчанию
+	interval := 3 * time.Minute
+	workerCount := 3
 
-	// Заглушка для будущей реализации
-	fmt.Println("Имитация работы фонового процесса...")
+	// Создаем агрегатор
+	aggregator = &Aggregator{
+		repo:        repo,
+		interval:    interval,
+		workerCount: workerCount,
+		done:        make(chan struct{}),
+		jobCh:       make(chan int, workerCount),
+	}
+
+	// Запускаем агрегатор
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err = startAggregator(ctx)
+	if err != nil {
+		fmt.Printf("Ошибка запуска агрегатора: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Запущен фоновый процесс для получения каналов (интервал = %v, количество рабочих процессов = %d)\n",
+		interval, workerCount)
 	fmt.Println("Для остановки процесса нажмите Ctrl+C")
 
-	// Простая имитация бесконечного цикла с возможностью прерывания
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
+	// Ожидаем сигнал завершения
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-sigCh
+
+	// Останавливаем агрегатор
+	stopAggregator()
 
 	fmt.Println("Изящное завершение работы: агрегатор остановлен")
+}
+
+// Запуск агрегатора
+func startAggregator(ctx context.Context) error {
+	aggregator.mu.Lock()
+	defer aggregator.mu.Unlock()
+
+	if aggregator.running {
+		return fmt.Errorf("агрегатор уже запущен")
+	}
+
+	// Запускаем тикер
+	aggregator.ticker = time.NewTicker(aggregator.interval)
+	aggregator.running = true
+
+	// Запускаем воркеров
+	for i := 0; i < aggregator.workerCount; i++ {
+		go worker(ctx, i)
+	}
+
+	// Запускаем основной цикл обработки
+	go func() {
+		// Сразу запускаем первую обработку
+		processFeeds(ctx)
+
+		for {
+			select {
+			case <-aggregator.ticker.C:
+				processFeeds(ctx)
+			case <-aggregator.done:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return nil
+}
+
+// Остановка агрегатора
+func stopAggregator() {
+	aggregator.mu.Lock()
+	defer aggregator.mu.Unlock()
+
+	if !aggregator.running {
+		return
+	}
+
+	// Останавливаем тикер
+	if aggregator.ticker != nil {
+		aggregator.ticker.Stop()
+	}
+
+	// Сигнализируем о завершении
+	close(aggregator.done)
+
+	// Закрываем канал задач после того, как все горутины завершатся
+	time.Sleep(100 * time.Millisecond)
+	close(aggregator.jobCh)
+
+	aggregator.running = false
+}
+
+// Функция воркера
+func worker(ctx context.Context, id int) {
+	for {
+		select {
+		case feedID, ok := <-aggregator.jobCh:
+			if !ok {
+				return
+			}
+			processFeed(ctx, id, feedID)
+		case <-aggregator.done:
+			return
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// Обработка всех каналов
+func processFeeds(ctx context.Context) {
+	// Получаем список каналов для обновления
+	feeds, err := getOutdatedFeeds(ctx)
+	if err != nil {
+		fmt.Printf("Ошибка получения устаревших каналов: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Получено %d каналов для обновления\n", len(feeds))
+
+	// Отправляем задачи воркерам
+	for _, feed := range feeds {
+		select {
+		case aggregator.jobCh <- feed.ID:
+			// Задача отправлена
+		case <-aggregator.done:
+			return
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// Получение устаревших каналов
+func getOutdatedFeeds(ctx context.Context) ([]*models.Feed, error) {
+	query := `
+        SELECT id, created_at, updated_at, name, url
+        FROM feeds
+        ORDER BY updated_at ASC
+        LIMIT $1
+    `
+
+	rows, err := aggregator.repo.DB.QueryContext(ctx, query, aggregator.workerCount)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var feeds []*models.Feed
+	for rows.Next() {
+		var feed models.Feed
+		err = rows.Scan(&feed.ID, &feed.CreatedAt, &feed.UpdatedAt, &feed.Name, &feed.URL)
+		if err != nil {
+			return nil, err
+		}
+		feeds = append(feeds, &feed)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return feeds, nil
+}
+
+// Обработка одного канала
+func processFeed(ctx context.Context, workerID, feedID int) {
+	// Получаем информацию о канале
+	var feed models.Feed
+	err := aggregator.repo.DB.QueryRowContext(ctx,
+		"SELECT id, name, url FROM feeds WHERE id = $1", feedID).
+		Scan(&feed.ID, &feed.Name, &feed.URL)
+	if err != nil {
+		fmt.Printf("Воркер %d: ошибка получения информации о канале %d: %v\n",
+			workerID, feedID, err)
+		return
+	}
+
+	fmt.Printf("Воркер %d: обработка канала %s (%s)\n", workerID, feed.Name, feed.URL)
+
+	// Получаем RSS
+	rssFeed, err := parser.ParseFeed(feed.URL)
+	if err != nil {
+		fmt.Printf("Воркер %d: ошибка парсинга канала %s: %v\n",
+			workerID, feed.Name, err)
+		return
+	}
+
+	// Обрабатываем статьи
+	for _, item := range rssFeed.Channel.Items {
+		// Парсим дату публикации
+		pubDate := time.Now()
+		if item.PubDate != "" {
+			parsed, err := parsePubDate(item.PubDate)
+			if err == nil {
+				pubDate = parsed
+			}
+		}
+
+		// Создаем объект статьи
+		article := &models.Article{
+			Title:       item.Title,
+			Link:        item.Link,
+			PublishedAt: pubDate,
+			Description: item.Description,
+			FeedID:      feedID,
+		}
+
+		// Добавляем статью в БД
+		err = aggregator.repo.AddArticle(ctx, article)
+		if err != nil {
+			fmt.Printf("Воркер %d: ошибка добавления статьи %s: %v\n",
+				workerID, item.Title, err)
+			continue
+		}
+	}
+
+	// Обновляем время последнего обновления канала
+	_, err = aggregator.repo.DB.ExecContext(ctx,
+		"UPDATE feeds SET updated_at = NOW() WHERE id = $1", feedID)
+	if err != nil {
+		fmt.Printf("Воркер %d: ошибка обновления времени канала %s: %v\n",
+			workerID, feed.Name, err)
+	}
+
+	fmt.Printf("Воркер %d: канал %s обработан, найдено %d статей\n",
+		workerID, feed.Name, len(rssFeed.Channel.Items))
+}
+
+// Парсинг даты публикации
+func parsePubDate(pubDate string) (time.Time, error) {
+	formats := []string{
+		time.RFC1123,
+		time.RFC1123Z,
+		time.RFC822,
+		time.RFC822Z,
+		"Mon, 02 Jan 2006 15:04:05 -0700",
+		"Mon, 2 Jan 2006 15:04:05 -0700",
+	}
+
+	for _, format := range formats {
+		if t, err := time.Parse(format, pubDate); err == nil {
+			return t, nil
+		}
+	}
+
+	return time.Time{}, fmt.Errorf("не удалось распарсить дату: %s", pubDate)
 }
 
 // Функция для команды add
@@ -159,69 +425,127 @@ func runAdd() {
 	// 6. Здесь будет код для добавления канала в БД
 }
 
-// Функция для команды set-interval
 func runSetInterval() {
-
+	// Создание набора флагов
 	intervalCmd := flag.NewFlagSet("set-interval", flag.ExitOnError)
-	intervalFlag := intervalCmd.Duration("interval", 3, "Интервал между RSS")
+
+	// Определение флага для интервала
+	durationFlag := intervalCmd.String("duration", "3m", "Интервал получения данных (например, 2m, 30s)")
+
+	// Парсинг флагов
 	intervalCmd.Parse(os.Args[2:])
 
-	if *intervalFlag <= 0 {
-		fmt.Println("Укажите время ожидания")
+	// Проверка, указан ли интервал
+	if *durationFlag == "" {
+		fmt.Println("Необходимо указать интервал с помощью флага --duration")
 		intervalCmd.PrintDefaults()
 		os.Exit(1)
 	}
-	fmt.Printf("Интервал получения данных изменился с 3 на %d", *intervalFlag)
 
-	// 1. Создайте набор флагов для команды set-interval
-	// Используйте flag.NewFlagSet()
+	// Проверка, запущен ли агрегатор
+	if aggregator == nil || !aggregator.IsRunning() {
+		fmt.Println("Ошибка: фоновый процесс не запущен. Сначала запустите команду 'fetch'")
+		os.Exit(1)
+	}
 
-	// 2. Определите флаг для нового интервала
-	// Например, intervalFlag := setIntervalCmd.Duration()
+	// Парсинг интервала
+	duration, err := time.ParseDuration(*durationFlag)
+	if err != nil {
+		fmt.Printf("Ошибка парсинга интервала: %v\n", err)
+		os.Exit(1)
+	}
 
-	// 3. Распарсите флаги
-	// Используйте setIntervalCmd.Parse()
+	// Установка нового интервала
+	oldInterval := aggregator.interval // сохраняем старое значение
+	aggregator.SetInterval(duration)
 
-	// 4. Проверьте, что указан интервал
-	// Если нет, выведите ошибку и справку по команде
-
-	// 5. Выведите сообщение об изменении интервала
-	// Например: "Интервал получения данных изменился с X на Y"
-
-	// 6. Здесь будет код для изменения интервала в работающем агрегаторе
+	fmt.Printf("Интервал получения данных изменился с %v на %v\n", oldInterval, duration)
 }
 
-// Функция для команды set-workers
-func runSetWorkers() {
+// Добавляем в Aggregator методы для изменения параметров
+func (a *Aggregator) SetInterval(newInterval time.Duration) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 
+	oldInterval := a.interval
+	a.interval = newInterval
+
+	// Если агрегатор запущен, обновляем тикер
+	if a.running && a.ticker != nil {
+		a.ticker.Reset(newInterval)
+		fmt.Printf("Интервал получения данных изменился с %v на %v\n", oldInterval, newInterval)
+	}
+}
+
+func (a *Aggregator) Resize(newWorkerCount int) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if newWorkerCount <= 0 {
+		return fmt.Errorf("количество работников должно быть положительным")
+	}
+
+	oldWorkerCount := a.workerCount
+
+	// Если агрегатор не запущен, просто обновляем значение
+	if !a.running {
+		a.workerCount = newWorkerCount
+		return nil
+	}
+
+	// Если нужно увеличить количество воркеров
+	if newWorkerCount > oldWorkerCount {
+		// Запускаем дополнительных воркеров
+		for i := oldWorkerCount; i < newWorkerCount; i++ {
+			go worker(context.Background(), i)
+		}
+	}
+
+	// Обновляем размер канала задач
+	a.workerCount = newWorkerCount
+	fmt.Printf("Количество рабочих процессов изменилось с %d на %d\n", oldWorkerCount, newWorkerCount)
+
+	return nil
+}
+
+func (a *Aggregator) IsRunning() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.running
+}
+
+func runSetWorkers() {
+	// Создание набора флагов
 	workersCmd := flag.NewFlagSet("set-workers", flag.ExitOnError)
 
-	workersFlag := workersCmd.Int("count", 3, "Количество работников")
+	// Определение флага для количества воркеров
+	countFlag := workersCmd.Int("count", 3, "Количество рабочих процессов")
 
+	// Парсинг флагов
 	workersCmd.Parse(os.Args[2:])
 
-	if *workersFlag <= 0 {
-		fmt.Println("Укажите количество работников")
+	// Проверка, указано ли количество воркеров
+	if *countFlag <= 0 {
+		fmt.Println("Количество рабочих процессов должно быть положительным")
 		workersCmd.PrintDefaults()
 		os.Exit(1)
 	}
-	fmt.Printf("Количество рабочих процессов изменилось с 3 на %d\n", *workersFlag)
-	// 1. Создайте набор флагов для команды set-workers
-	// Используйте flag.NewFlagSet()
 
-	// 2. Определите флаг для нового количества воркеров
-	// Например, workersFlag := setWorkersCmd.Int()
+	// Проверка, запущен ли агрегатор
+	if aggregator == nil || !aggregator.IsRunning() {
+		fmt.Println("Ошибка: фоновый процесс не запущен. Сначала запустите команду 'fetch'")
+		os.Exit(1)
+	}
 
-	// 3. Распарсите флаги
-	// Используйте setWorkersCmd.Parse()
+	// Установка нового количества воркеров
+	oldCount := aggregator.workerCount // сохраняем старое значение
+	err := aggregator.Resize(*countFlag)
+	if err != nil {
+		fmt.Printf("Ошибка изменения количества рабочих процессов: %v\n", err)
+		os.Exit(1)
+	}
 
-	// 4. Проверьте, что указано количество воркеров
-	// Если нет, выведите ошибку и справку по команде
-
-	// 5. Выведите сообщение об изменении количества воркеров
-	// Например: "Количество рабочих процессов изменилось с X на Y"
-
-	// 6. Здесь будет код для изменения количества воркеров в работающем агрегаторе
+	fmt.Printf("Количество рабочих процессов изменилось с %d на %d\n", oldCount, *countFlag)
 }
 
 // Функция для команды list
@@ -298,49 +622,48 @@ func runDelete() {
 	// 6. Здесь будет код для удаления канала из БД
 }
 
-// Функция для команды articles
 func runArticles() {
-
 	articlesCmd := flag.NewFlagSet("articles", flag.ExitOnError)
 	feedNameFlag := articlesCmd.String("feed-name", "", "Название RSS канала")
-	numFlag := articlesCmd.Int("num", 5, "Лимит статей")
+	numFlag := articlesCmd.Int("num", 3, "Лимит статей")
 
 	articlesCmd.Parse(os.Args[2:])
 
 	if *feedNameFlag == "" {
+		fmt.Println("Необходимо указать имя канала (--feed-name)")
 		articlesCmd.PrintDefaults()
 		os.Exit(1)
 	}
-	fmt.Printf("Источник: %s %d \n", *feedNameFlag, *numFlag)
 
-	fmt.Println("1. [2025-06-18] Apple анонсирует новые чипы M4 для MacBook Pro")
-	fmt.Println("   https://techcrunch.com/apple-announces-m4/")
-	fmt.Println("")
-	fmt.Println("2. [2025-06-17] OpenAI запускает GPT-5 с мультимодальными возможностями")
-	fmt.Println("   https://techcrunch.com/openai-launches-gpt-5/")
-	fmt.Println("")
-	fmt.Println("3. [2025-06-16] Google представляет новые инструменты для обеспечения конфиденциальности")
-	fmt.Println("   https://techcrunch.com/google-privacy-io-2025/")
+	// Подключение к базе данных
+	repo, err := storage.NewPostgresRepository("postgres://postgres:changeme@localhost:5432/rsshub?sslmode=disable")
+	if err != nil {
+		fmt.Printf("Ошибка подключения к БД: %v\n", err)
+		return
+	}
+	defer repo.Close()
 
-	// 1. Создайте набор флагов для команды articles
-	// Используйте flag.NewFlagSet()
+	// Получение статей
+	ctx := context.Background()
+	articles, err := repo.GetArticlesByFeed(ctx, *feedNameFlag, *numFlag)
+	if err != nil {
+		fmt.Printf("Ошибка получения статей: %v\n", err)
+		return
+	}
 
-	// 2. Определите флаги для имени канала и количества статей
-	// Например, feedNameFlag := articlesCmd.String(), numFlag := articlesCmd.Int()
+	// Вывод заголовка
+	fmt.Printf("Источник: %s\n\n", *feedNameFlag)
 
-	// 3. Распарсите флаги
-	// Используйте articlesCmd.Parse()
+	// Вывод статей
+	if len(articles) == 0 {
+		fmt.Println("Статьи не найдены")
+		return
+	}
 
-	// 4. Проверьте, что указано имя канала
-	// Если нет, выведите ошибку и справку по команде
-
-	// 5. Выведите заголовок списка статей
-	// Например: "Источник: FEED_NAME"
-
-	// 6. Здесь будет код для получения статей из БД
-
-	// 7. Выведите информацию о каждой статье
-	// Например: "1. [DATE] TITLE\n URL"
+	for i, article := range articles {
+		fmt.Printf("%d. [%s] %s\n", i+1, article.PublishedAt.Format("2006-01-02"), article.Title)
+		fmt.Printf("   %s\n\n", article.Link)
+	}
 }
 
 func runDBTest() {
