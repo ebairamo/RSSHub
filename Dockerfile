@@ -6,7 +6,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN go build -o rsshub ./cmd/rsshub
+RUN go build -o rsshub .
 
 FROM alpine:latest
 
